@@ -1,0 +1,129 @@
+# Autonomous PR Agent with Evaluation Guardrails
+
+An autonomous, franchise-ready PR Agent that safely proposes, verifies, and publishes machine learning model updates with unvarnished metrics transparency.
+
+This project is built to overcome "The Technician's Trap" (from *The E-Myth Revisited* by Michael E. Gerber)—engineering a self-sustaining system that executes end-to-end without requiring human technical intervention.
+
+---
+
+## 🏛️ Architecture: Two Repos, One Story
+
+To enforce strict security and honest evaluation, the project features a decoupled, two-repository architecture:
+
+```
+                  ┌─────────────────────────────────────┐
+                  │                                     │
+                  │   Proposer Repo (minimal-pr-agent)  │
+                  │                                     │
+                  └──────────────────┬──────────────────┘
+                                     │
+                        Secure API   │   Opens PR with
+                       Auth (GH App) │   Unvarnished Metrics
+                                     ▼
+                  ┌─────────────────────────────────────┐
+                  │                                     │
+                  │   Evaluator Repo (non-llm-judges)   │
+                  │                                     │
+                  └─────────────────────────────────────┘
+```
+
+1. **Repo 1: `non-llm-judges` (The Evaluator / Safety Boundary)**
+   - **Role:** The target repository containing ML evaluation code (e.g., `train_svm.py`) and datasets.
+   - **CI Pipeline:** Evaluates proposed models on every pull request, calculating performance metrics (Acceptance Rate, F1-Score, Precision, Recall, and Latency).
+   - **Safety Boundary:** Real results are automatically posted as PR comments. Human reviewers make the final merge decisions.
+
+2. **Repo 2: `minimal-pr-agent` (The Proposer - This Repo)**
+   - **Role:** A Python-based agent application that identifies required improvements, executes sandbox validations, generates precise code changes using Google's Gemini LLM SDK, and opens a structured, evidence-backed PR.
+   - **Security:** Fully decoupled from merging capability. The GitHub App token is restricted to read/write pull requests, preventing unauthorized self-merges.
+
+---
+
+## 📂 Directory Layout
+
+```
+.
+├── GEMINI.md                    # System rules, design boundaries, and constraints
+├── README.md                    # Main overview and setup guide (this file)
+├── readme-challenges-resolution.md # Deep-dive into solved technical issues
+├── verify_connection.py         # Utility to verify GitHub App authentication
+├── agent/                       # Core Agent Application logic
+│   ├── agent.py                 # Main orchestration loop & local sandbox
+│   ├── github_provider.py       # GitHub API integration & Remote sandbox
+│   ├── config.yaml              # App config (target repo, file rules, regex filters)
+│   └── test_agent.py            # Unit tests for the agent components
+├── credentials/                 # Secure storage for App keys (gitignored)
+│   └── *.private-key.pem        # GitHub App Private Key PEM
+├── evaluator/                   # Local simulation space
+└── venv/                        # Local Python Virtual Environment
+```
+
+---
+
+## 🛠️ Installation & Setup
+
+### 1. Prerequisites
+- Python 3.11+ (Python 3.14 recommended/tested)
+- macOS (darwin) or Linux environment
+
+### 2. Set Up the Virtual Environment
+Clone this repository and create the virtual environment:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r agent/requirements.txt   # If requirements file exists, or:
+# Install core dependencies:
+pip install pygithub pydantic google-generativeai python-dotenv pyyaml
+# Install sandbox evaluation dependencies:
+pip install mlflow scikit-learn pandas numpy xgboost lightgbm
+```
+
+### 3. Setup Environment Variables
+Create a `.env` file in the root directory:
+
+```ini
+# GitHub App Authentication
+GITHUB_APP_ID="5072613"
+GITHUB_INSTALLATION_ID="164783272"
+GITHUB_PRIVATE_KEY_PATH="credentials/ml-tuning-pr-agent.2026-09-25.private-key.pem"
+
+# Gemini LLM API Key
+GEMINI_AI_KEY="your-google-gemini-api-key-here"
+```
+
+---
+
+## 🚀 Execution & Usage
+
+The agent can be run locally to evaluate baseline metrics, propose modifications (such as changing the hyperparameter scaler), verify them inside an isolated workspace sandbox, and publish the pull request.
+
+To trigger an end-to-end execution requesting a change to `RobustScaler` on the remote evaluator repository:
+
+```bash
+PYTHONPATH=. venv/bin/python3 agent/agent.py "RobustScaler"
+```
+
+### What Happens Behind the Scenes:
+1. **App Verification:** Authenticates with GitHub using the App installation ID and private key.
+2. **Remote Ingest:** Clones the remote repository (`thehiddenrocky/non-llm-judges`) into a temporary workspace.
+3. **Baseline Run:** Executes `train_svm.py` dynamically using `sys.executable` to run inside the correct virtualenv, then scrapes current metrics.
+4. **Code Generation:** Queries Google Gemini using strict prompt boundaries to propose the modification.
+5. **Security Allowlist Gate:** Diffs are validated against allowlisted regular expressions (e.g., matching scaler modifications only) to prevent malicious code injection.
+6. **Sandbox Verification:** Executes the modified code to verify stability and parse updated metrics.
+7. **PR Submission:** Creates a remote branch, pushes changes, and creates a beautifully formatted PR featuring unvarnished metrics.
+
+---
+
+## 🔍 Deep-Dive & Troubleshooting
+
+For a detailed walkthrough of technical challenges encountered during development—including environment load barriers, virtualenv sandbox routing, and parsing raw stdout metrics—see:
+
+👉 **[readme-challenges-resolution.md](readme-challenges-resolution.md)**
+
+---
+
+## 🏆 Proof of Success
+
+Our end-to-end remote execution successfully generated **Pull Request #2** on the target repository with fully populated comparative metrics:
+
+🔗 **[Live Pull Request #2 on target repository](https://github.com/thehiddenrocky/non-llm-judges/pull/2)**
