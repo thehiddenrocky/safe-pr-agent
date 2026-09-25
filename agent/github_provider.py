@@ -36,6 +36,24 @@ except ImportError:
             def read_metrics(self, metrics_file: str) -> dict: pass
 
 
+def load_dotenv():
+    """Loads environment variables from .env file at workspace root or packaging directories."""
+    possible_paths = [
+        ".env",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), ".env")),
+    ]
+    for env_path in possible_paths:
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        os.environ[k.strip()] = v.strip().strip('"').strip("'")
+            break
+
+
 class GitHubAppAuthenticator:
     """
     Handles authentication as a GitHub App.
@@ -109,6 +127,7 @@ class GitRepositoryProvider(RepositoryProvider):
     sandbox tests, and opens a structured PR when the modifications are verified.
     """
     def __init__(self, clone_url: str, branch: Optional[str] = None):
+        load_dotenv()
         self.clone_url = clone_url
         self.owner, self.repo_name = self._parse_repo_fullname(clone_url)
         
@@ -247,6 +266,12 @@ class GitRepositoryProvider(RepositoryProvider):
             f.write(content)
 
     def run_command(self, command: str) -> subprocess.CompletedProcess:
+        # Replace python3 or python command prefix with the active sys.executable
+        if command.startswith("python3 "):
+            command = f"{sys.executable} {command[8:]}"
+        elif command.startswith("python "):
+            command = f"{sys.executable} {command[7:]}"
+            
         print(f"[Sandbox] Running sandbox command in clone: {command}")
         return subprocess.run(
             command,
