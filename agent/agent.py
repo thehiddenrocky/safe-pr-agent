@@ -170,11 +170,13 @@ def validate_proposed_changes(
     new_content: str,
     file_name: str,
     allowed_files: List[str],
-    allowed_patterns: List[str]
+    allowed_patterns: List[str],
+    mode: str = "strict"
 ) -> Tuple[bool, Optional[str]]:
     """
-    Strict allowlist validation gate.
-    Ensures ONLY allowed files are edited, and ONLY lines matching allowed regex patterns are modified.
+    Security validation gate.
+    - Strict mode: Ensures ONLY allowed files are edited, and ONLY lines matching allowed regex patterns are modified.
+    - Relaxed mode: Ensures ONLY allowed files are edited, and checks for malicious code patterns / injection vectors.
     """
     # Gate 1: Check if file name is in the allowlist
     if file_name not in allowed_files:
@@ -183,29 +185,45 @@ def validate_proposed_changes(
     # Gate 2: Analyze line differences to ensure no unauthorized lines were changed
     original_lines = original_content.splitlines()
     new_lines = new_content.splitlines()
-
-    # Compare lines
-    # For a simple, ultra-secure validation on small ML hyperparameter scripts:
-    # Ensure any line that was modified or introduced matches one of the allowed patterns.
-    compiled_patterns = [re.compile(p) for p in allowed_patterns]
-
-    # Let's perform a simple check:
-    # Find all lines in the new content that differ from original content.
-    # To keep it extremely robust and clear, we find non-blank lines that are not in the original content.
     original_lines_set = set(original_lines)
-    
-    modified_lines = []
-    for line in new_lines:
-        trimmed = line.strip()
-        if trimmed and line not in original_lines_set:
-            # This is a modified or added line! Let's check if it matches at least one pattern.
-            matched = False
-            for pattern in compiled_patterns:
-                if pattern.search(trimmed):
-                    matched = True
-                    break
-            if not matched:
-                return False, f"Unauthorized code modification detected. Line: '{line}' does not match any of the allowed patterns: {allowed_patterns}."
+
+    if mode == "strict":
+        # Ensure any line that was modified or introduced matches one of the allowed patterns.
+        compiled_patterns = [re.compile(p) for p in allowed_patterns]
+
+        # Find all lines in the new content that differ from original content.
+        for line in new_lines:
+            trimmed = line.strip()
+            if trimmed and line not in original_lines_set:
+                # This is a modified or added line! Let's check if it matches at least one pattern.
+                matched = False
+                for pattern in compiled_patterns:
+                    if pattern.search(trimmed):
+                        matched = True
+                        break
+                if not matched:
+                    return False, f"Unauthorized code modification detected. Line: '{line}' does not match any of the allowed patterns: {allowed_patterns}."
+    else:
+        # Relaxed mode: check for malicious patterns / RCE injection
+        # Find modified lines first
+        modified_lines = [line.strip() for line in new_lines if line.strip() and line not in original_lines_set]
+        
+        # Blocklist regexes to prevent malicious command execution or standard python sandboxing escape attempts
+        blocklist = [
+            r"\bos\.(system|popen|spawn|exec|getattr|setattr|environ)\b",
+            r"\bsubprocess\b",
+            r"\beval\s*\(",
+            r"\bexec\s*\(",
+            r"\b__import__\b",
+            r"\bimport\s+(os|subprocess|sys|shutil|urllib|socket|requests|builtins|pty|platform)\b",
+            r"\bfrom\s+(os|subprocess|sys|shutil|urllib|socket|requests|builtins|pty|platform)\b",
+        ]
+        compiled_blocks = [re.compile(p, re.IGNORECASE) for p in blocklist]
+        
+        for line in modified_lines:
+            for pattern in compiled_blocks:
+                if pattern.search(line):
+                    return False, f"Malicious code injection or dangerous operation detected in relaxed mode. Pattern match: {pattern.pattern} in line: '{line}'."
 
     return True, None
 
@@ -257,6 +275,56 @@ PROPOSED CODE REPLACEMENT:
         print(f"🔒 [Security Audit] Logged violation details to: {full_log_path}")
     except Exception as e:
         print(f"[Warning] Failed to write to security log file: {e}")
+
+
+def log_execution_run(
+    status: str,
+    issue_desc: str,
+    baseline_metrics: Optional[dict] = None,
+    new_metrics: Optional[dict] = None,
+    pr_url: Optional[str] = None,
+    error_msg: Optional[str] = None,
+    log_file: str = "logs/execution.log"
+) -> None:
+    """
+    Appends a detailed log of the execution run (success, fail, error) to a persistent log file.
+    Maintains systematic audit telemetry.
+    """
+    from datetime import datetime
+    import os
+    
+    # Resolve the log file path relative to the root directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.abspath(os.path.join(script_dir, ".."))
+    full_log_path = os.path.join(root_dir, log_file)
+    
+    # Ensure parent directory exists (creates the 'logs' folder if missing)
+    os.makedirs(os.path.dirname(full_log_path), exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    log_entry = f"""================================================================================
+TIMESTAMP: {timestamp}
+STATUS: {status}
+TRIGGER ISSUE: "{issue_desc}"
+"""
+    if error_msg:
+        log_entry += f"ERROR/REASON: {error_msg}\n"
+    if baseline_metrics:
+        log_entry += f"BASELINE METRICS: {json.dumps(baseline_metrics)}\n"
+    if new_metrics:
+        log_entry += f"SANDBOX METRICS: {json.dumps(new_metrics)}\n"
+    if pr_url:
+        log_entry += f"PR CREATED: {pr_url}\n"
+        
+    log_entry += "================================================================================\n\n"
+    
+    try:
+        with open(full_log_path, "a") as f:
+            f.write(log_entry)
+        print(f"📝 [Execution Log] Recorded run details to: {full_log_path}")
+    except Exception as e:
+        print(f"[Warning] Failed to write to execution log file: {e}")
 
 
 # =====================================================================
@@ -398,6 +466,7 @@ def main():
         print("[Config] Successfully loaded config.yaml.")
     except Exception as e:
         print(f"[Error] Failed to load config.yaml: {e}")
+        log_execution_run(status="ERROR", issue_desc=args.issue, error_msg=f"Failed to load config.yaml: {e}")
         sys.exit(1)
 
     target_config = config.get("target_repo", {})
@@ -416,6 +485,7 @@ def main():
             print(f"[Repo] Initialized Git Repository Provider for: {repo_provider.clone_url}")
     except Exception as e:
         print(f"[Error] Failed to initialize Repository Provider: {e}")
+        log_execution_run(status="ERROR", issue_desc=args.issue, error_msg=f"Failed to initialize Repository Provider: {e}")
         sys.exit(1)
 
     # 3. Retrieve Original Codebase Context & Metrics
@@ -426,6 +496,7 @@ def main():
         print(f"Retrieved content of '{file_to_read}' successfully.")
     except Exception as e:
         print(f"[Error] Failed to retrieve context for file '{file_to_read}': {e}")
+        log_execution_run(status="ERROR", issue_desc=args.issue, error_msg=f"Failed to retrieve context for file '{file_to_read}': {e}")
         sys.exit(1)
 
     # Fetch baseline metrics
@@ -440,6 +511,7 @@ def main():
         res = repo_provider.run_command(sandbox_config.get("evaluation_command"))
         if res.returncode != 0:
             print(f"[Error] Failed to run initial evaluation command: {res.stderr}")
+            log_execution_run(status="ERROR", issue_desc=args.issue, error_msg=f"Failed to run initial evaluation command: {res.stderr}")
             sys.exit(1)
         baseline_metrics = repo_provider.read_metrics(sandbox_config.get("metrics_file"))
         if not baseline_metrics:
@@ -477,6 +549,7 @@ def main():
     # Let's rebuild the full file content with changes applied to validate
     if original_code_block not in original_content:
         print("[Error] LLM proposed original code block was not found in the original file content. Aborting.")
+        log_execution_run(status="ERROR", issue_desc=args.issue, error_msg="LLM proposed original code block was not found in original file content.")
         sys.exit(1)
         
     modified_content = original_content.replace(original_code_block, new_code_block)
@@ -486,7 +559,8 @@ def main():
         new_content=modified_content,
         file_name=file_to_modify,
         allowed_files=allowlist_config.get("allowed_files", []),
-        allowed_patterns=allowlist_config.get("allowed_patterns", [])
+        allowed_patterns=allowlist_config.get("allowed_patterns", []),
+        mode=allowlist_config.get("mode", "strict")
     )
 
     if not is_valid:
@@ -499,6 +573,7 @@ def main():
             new_code=new_code_block,
             error_msg=validation_error
         )
+        log_execution_run(status="REJECTED", issue_desc=args.issue, error_msg=validation_error)
         print("Aborting. No changes were applied.")
         sys.exit(1)
     else:
@@ -511,6 +586,7 @@ def main():
         repo_provider.write_file_content(file_to_modify, modified_content)
     except Exception as e:
         print(f"[Error] Failed to write changes to file: {e}")
+        log_execution_run(status="ERROR", issue_desc=args.issue, error_msg=f"Failed to write changes to sandbox: {e}")
         # Attempt to restore just in case
         sys.exit(1)
 
@@ -521,6 +597,7 @@ def main():
         print(f"❌ [Sandbox Error] Evaluation command crashed or failed!")
         print(f"Exit code: {eval_res.returncode}")
         print(f"Error output:\n{eval_res.stderr}")
+        log_execution_run(status="SANDBOX_FAILED", issue_desc=args.issue, error_msg=f"Sandbox evaluation command failed with exit code {eval_res.returncode}: {eval_res.stderr}")
         
         # Roll back changes immediately to keep sandbox pristine!
         print("Rolling back changes to keep sandbox pristine...")
@@ -600,6 +677,7 @@ File modified: `{file_to_modify}`
     print("====================================================")
 
     # 9. Optional: Real GitHub Push & PR Submission
+    pr_url = None
     if isinstance(repo_provider, GitRepositoryProvider):
         if repo_provider.token:
             print("\n--- [Step 5: Pushing Changes and Opening GitHub PR] ---")
@@ -607,15 +685,21 @@ File modified: `{file_to_modify}`
                 # Re-apply the verified modified content so it is committed and pushed
                 repo_provider.write_file_content(file_to_modify, modified_content)
                 pr_data = repo_provider.push_and_open_pr(pr_title, pr_body)
-                print(f"✅ Pull Request successfully created: {pr_data.get('html_url')}")
+                pr_url = pr_data.get('html_url')
+                print(f"✅ Pull Request successfully created: {pr_url}")
+                log_execution_run(status="SUCCESS", issue_desc=args.issue, baseline_metrics=baseline_metrics, new_metrics=new_metrics, pr_url=pr_url)
             except Exception as e:
                 print(f"❌ Failed to push changes or open PR: {e}")
+                log_execution_run(status="PR_FAILED", issue_desc=args.issue, baseline_metrics=baseline_metrics, new_metrics=new_metrics, error_msg=f"Failed to push or open PR: {e}")
             finally:
                 # Cleanup the sandbox directory
                 repo_provider.cleanup()
         else:
             print("\n[GitHub] GitHub App credentials not configured. Skipping remote push/PR step.")
+            log_execution_run(status="LOCAL_SUCCESS", issue_desc=args.issue, baseline_metrics=baseline_metrics, new_metrics=new_metrics, error_msg="Local verification succeeded, but remote push was skipped (missing GitHub App credentials).")
             repo_provider.cleanup()
+    else:
+        log_execution_run(status="LOCAL_SUCCESS", issue_desc=args.issue, baseline_metrics=baseline_metrics, new_metrics=new_metrics, error_msg="Local verification succeeded (LocalRepositoryProvider).")
 
     print("\n🎉 PROCESS COMPLETED SUCCESSFULLY!")
     print("====================================================")

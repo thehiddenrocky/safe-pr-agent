@@ -6,6 +6,10 @@ target_repo:
   path: "https://github.com/thehiddenrocky/non-llm-judges.git"
 
 allowlist:
+  # Security mode: 'strict' or 'relaxed'
+  # 'strict' restricts modifications exactly to allowed_patterns line-by-line.
+  # 'relaxed' allows any changes in allowed_files that do not trigger the RCE/malicious blocklist.
+  mode: "relaxed"
   # Files that the agent is allowed to edit
   allowed_files:
     - "train_svm.py"
