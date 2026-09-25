@@ -1,9 +1,9 @@
 # Autonomous PR Agent Configuration
 
 target_repo:
-  type: "local"
+  type: "remote"
   # Path is relative to the directory containing this configuration file or absolute
-  path: "../evaluator"
+  path: "https://github.com/thehiddenrocky/non-llm-judges.git"
 
 allowlist:
   # Files that the agent is allowed to edit
