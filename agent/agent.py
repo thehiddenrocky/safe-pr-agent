@@ -89,34 +89,10 @@ class LocalRepositoryProvider(RepositoryProvider):
             return json.load(f)
 
 
-class GitRepositoryProvider(RepositoryProvider):
-    """
-    STUB: Future implementation for real Git/GitHub integration.
-    Swapping to this requires ZERO changes to the core agent runner because it shares
-    the RepositoryProvider interface.
-    """
-    def __init__(self, clone_url: str, branch: str = "main"):
-        self.clone_url = clone_url
-        self.branch = branch
-        self.local_clone_path = "/tmp/cloned_repo"
-        # In a real setup, we would run:
-        # subprocess.run(f"git clone {clone_url} {self.local_clone_path}")
-
-    def get_file_content(self, file_path: str) -> str:
-        # Fetch file content from the cloned directory
-        pass
-
-    def write_file_content(self, file_path: str, content: str) -> None:
-        # Modify file locally in clone, stage, commit, push, open PR
-        pass
-
-    def run_command(self, command: str) -> subprocess.CompletedProcess:
-        # Run command in sandbox or Docker container representing the clone
-        pass
-
-    def read_metrics(self, metrics_file: str) -> dict:
-        # Read metrics generated in the sandbox
-        pass
+try:
+    from agent.github_provider import GitRepositoryProvider
+except ImportError:
+    from github_provider import GitRepositoryProvider
 
 
 # =====================================================================
@@ -492,7 +468,26 @@ File modified: `{file_to_modify}`
     print("\nPR Body:")
     print(pr_body)
     print("====================================================")
-    print("🎉 PROCESS COMPLETED SUCCESSFULLY!")
+
+    # 9. Optional: Real GitHub Push & PR Submission
+    if isinstance(repo_provider, GitRepositoryProvider):
+        if repo_provider.token:
+            print("\n--- [Step 5: Pushing Changes and Opening GitHub PR] ---")
+            try:
+                # Re-apply the verified modified content so it is committed and pushed
+                repo_provider.write_file_content(file_to_modify, modified_content)
+                pr_data = repo_provider.push_and_open_pr(pr_title, pr_body)
+                print(f"✅ Pull Request successfully created: {pr_data.get('html_url')}")
+            except Exception as e:
+                print(f"❌ Failed to push changes or open PR: {e}")
+            finally:
+                # Cleanup the sandbox directory
+                repo_provider.cleanup()
+        else:
+            print("\n[GitHub] GitHub App credentials not configured. Skipping remote push/PR step.")
+            repo_provider.cleanup()
+
+    print("\n🎉 PROCESS COMPLETED SUCCESSFULLY!")
     print("====================================================")
 
 
