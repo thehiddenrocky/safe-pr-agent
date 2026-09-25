@@ -71,6 +71,12 @@ class LocalRepositoryProvider(RepositoryProvider):
             f.write(content)
 
     def run_command(self, command: str) -> subprocess.CompletedProcess:
+        # Replace python3 or python command prefix with the active sys.executable
+        if command.startswith("python3 "):
+            command = f"{sys.executable} {command[8:]}"
+        elif command.startswith("python "):
+            command = f"{sys.executable} {command[7:]}"
+            
         # Run command inside the target repository directory
         print(f"[Sandbox] Executing command in '{self.base_path}': {command}")
         return subprocess.run(
@@ -93,6 +99,59 @@ try:
     from agent.github_provider import GitRepositoryProvider
 except ImportError:
     from github_provider import GitRepositoryProvider
+
+
+def load_dotenv():
+    """Loads environment variables from .env file at workspace root or packaging directories."""
+    possible_paths = [
+        ".env",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), ".env")),
+    ]
+    for env_path in possible_paths:
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        os.environ[k.strip()] = v.strip().strip('"').strip("'")
+            break
+
+    # If GEMINI_AI_KEY is set but GEMINI_API_KEY is not, map them
+    if "GEMINI_AI_KEY" in os.environ and "GEMINI_API_KEY" not in os.environ:
+        os.environ["GEMINI_API_KEY"] = os.environ["GEMINI_AI_KEY"]
+
+
+def parse_metrics_from_stdout(stdout: str) -> dict:
+    """Parses SVM training/evaluation stdout to extract metrics."""
+    metrics = {}
+    
+    # Search for Best F1 Score: 0.8400 or F1 Score: 0.8400 or F1: 0.8400
+    f1_match = re.search(r"(?:Best F1 Score|F1 Score|F1):\s*([0-9.]+)", stdout, re.IGNORECASE)
+    if f1_match:
+        metrics["f1_score"] = float(f1_match.group(1))
+    
+    # Search for Accuracy:  0.8400
+    acc_match = re.search(r"Accuracy:\s*([0-9.]+)", stdout, re.IGNORECASE)
+    if acc_match:
+        metrics["accuracy"] = float(acc_match.group(1))
+
+    # Search for Precision: 0.8100
+    prec_match = re.search(r"Precision:\s*([0-9.]+)", stdout, re.IGNORECASE)
+    if prec_match:
+        metrics["precision"] = float(prec_match.group(1))
+
+    # Search for Recall:    0.8000
+    rec_match = re.search(r"Recall:\s*([0-9.]+)", stdout, re.IGNORECASE)
+    if rec_match:
+        metrics["recall"] = float(rec_match.group(1))
+
+    # If any of the metrics are found, supply default latency of 0.0
+    if metrics:
+        metrics["latency_ms"] = 0.0
+
+    return metrics
 
 
 # =====================================================================
@@ -274,6 +333,7 @@ def get_mock_llm_response(issue_desc: str) -> dict:
 # =====================================================================
 
 def main():
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Autonomous PR Agent CLI")
     parser.add_argument("issue", type=str, help="The user-reported issue / diagnosis to solve.")
     args = parser.parse_args()
@@ -333,6 +393,13 @@ def main():
             print(f"[Error] Failed to run initial evaluation command: {res.stderr}")
             sys.exit(1)
         baseline_metrics = repo_provider.read_metrics(sandbox_config.get("metrics_file"))
+        if not baseline_metrics:
+            print("[Info] Parsing baseline metrics from stdout...")
+            baseline_metrics = parse_metrics_from_stdout(res.stdout)
+            try:
+                repo_provider.write_file_content(sandbox_config.get("metrics_file"), json.dumps(baseline_metrics, indent=4))
+            except Exception as e:
+                print(f"[Warning] Could not write baseline metrics.json: {e}")
         print("Generated and loaded Baseline Metrics:")
         for k, v in baseline_metrics.items():
             print(f"  {k}: {v}")
@@ -406,6 +473,13 @@ def main():
 
     # Load new metrics
     new_metrics = repo_provider.read_metrics(sandbox_config.get("metrics_file"))
+    if not new_metrics:
+        print("[Info] Parsing sandbox metrics from stdout...")
+        new_metrics = parse_metrics_from_stdout(eval_res.stdout)
+        try:
+            repo_provider.write_file_content(sandbox_config.get("metrics_file"), json.dumps(new_metrics, indent=4))
+        except Exception as e:
+            print(f"[Warning] Could not write sandbox metrics.json: {e}")
     print("\nNew Evaluation Metrics:")
     for k, v in new_metrics.items():
         print(f"  {k}: {v}")
