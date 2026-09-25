@@ -1,0 +1,27 @@
+# Autonomous PR Agent Configuration
+
+target_repo:
+  type: "local"
+  # Path is relative to the directory containing this configuration file or absolute
+  path: "../evaluator"
+
+allowlist:
+  # Files that the agent is allowed to edit
+  allowed_files:
+    - "train_svm.py"
+  # Specific parameter/term patterns that are safe to modify (regex or simple search terms)
+  allowed_patterns:
+    - "^C\\s*=\\s*[0-9.]+"
+    - "^kernel\\s*=\\s*['\"][a-zA-Z0-9]+['\"]"
+    - "^scaler\\s*=\\s*['\"][a-zA-Z0-9]+['\"]"
+
+sandbox:
+  # Command to run for local verification
+  evaluation_command: "python3 train_svm.py"
+  # Location of the evaluation metrics output, relative to target_repo path
+  metrics_file: "metrics.json"
+
+llm:
+  # Can be 'gemini' or 'mock'
+  provider: "gemini"
+  model: "gemini-1.5-flash"
