@@ -1,0 +1,16 @@
+================================================================================
+TIMESTAMP: 2026-09-25 15:28:01
+STATUS: REJECTED (Allowlist Guardrail Triggered)
+TRIGGER ISSUE: "The baseline SVM model is underfitting the training dataset, let's decrease the margin size"
+FILE TARGETED: "train_svm.py"
+REASON FOR REJECTION:
+Unauthorized code modification detected. Line: '        clf = LinearSVC(C=C, random_state=42, tol=1e-5, class_weight=class_weight)' does not match any of the allowed patterns: ['^C\\s*=\\s*[0-9.]+', '^kernel\\s*=\\s*[\'"][a-zA-Z0-9]+[\'"]', '^scaler\\s*=\\s*[\'"][a-zA-Z0-9]+[\'"]'].
+
+PROPOSED CODE REPLACEMENT:
+---------- ORIGINAL CODE ----------
+        clf = LinearSVC(random_state=42, tol=1e-5, class_weight=class_weight)
+------------- NEW CODE ------------
+        C = 2.0
+        clf = LinearSVC(C=C, random_state=42, tol=1e-5, class_weight=class_weight)
+================================================================================
+

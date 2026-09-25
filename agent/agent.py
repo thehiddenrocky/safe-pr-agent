@@ -210,6 +210,55 @@ def validate_proposed_changes(
     return True, None
 
 
+def log_security_violation(
+    issue_desc: str,
+    file_name: str,
+    original_code: str,
+    new_code: str,
+    error_msg: str,
+    log_file: str = "logs/security_violations.log"
+) -> None:
+    """
+    Appends a detailed log of any security allowlist rejection to a persistent log file.
+    Maintains modularity and separate responsibility for security auditing.
+    """
+    from datetime import datetime
+    import os
+    
+    # Resolve the log file path relative to the root directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.abspath(os.path.join(script_dir, ".."))
+    full_log_path = os.path.join(root_dir, log_file)
+    
+    # Ensure parent directory exists (creates the 'logs' folder if missing)
+    os.makedirs(os.path.dirname(full_log_path), exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    log_entry = f"""================================================================================
+TIMESTAMP: {timestamp}
+STATUS: REJECTED (Allowlist Guardrail Triggered)
+TRIGGER ISSUE: "{issue_desc}"
+FILE TARGETED: "{file_name}"
+REASON FOR REJECTION:
+{error_msg}
+
+PROPOSED CODE REPLACEMENT:
+---------- ORIGINAL CODE ----------
+{original_code}
+------------- NEW CODE ------------
+{new_code}
+================================================================================
+
+"""
+    try:
+        with open(full_log_path, "a") as f:
+            f.write(log_entry)
+        print(f"🔒 [Security Audit] Logged violation details to: {full_log_path}")
+    except Exception as e:
+        print(f"[Warning] Failed to write to security log file: {e}")
+
+
 # =====================================================================
 # 3. LLM Code Generation Client
 # =====================================================================
@@ -443,6 +492,13 @@ def main():
     if not is_valid:
         print(f"❌ [Security Reject] Proposed changes failed the strict allowlist guardrail!")
         print(f"Reason: {validation_error}")
+        log_security_violation(
+            issue_desc=args.issue,
+            file_name=file_to_modify,
+            original_code=original_code_block,
+            new_code=new_code_block,
+            error_msg=validation_error
+        )
         print("Aborting. No changes were applied.")
         sys.exit(1)
     else:
