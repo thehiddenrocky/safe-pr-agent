@@ -194,7 +194,7 @@ def generate_fix(issue_desc: str, codebase_context: str, provider_config: dict) 
     try:
         import google.generativeai as genai
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(provider_config.get("model", "gemini-1.5-flash"))
+        model = genai.GenerativeModel(provider_config.get("model", "gemini-3.8-flash"))
         
         prompt = f"""
 You are an autonomous machine learning engineer agent.
