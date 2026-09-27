@@ -197,5 +197,21 @@ class TestIssueDetection(unittest.TestCase):
                 provider.cleanup()
 
 
+class TestTeeStream(unittest.TestCase):
+    def test_tee_stream_redirection(self):
+        import io
+        from agent.agent import TeeStream
+
+        mock_stdout = io.StringIO()
+        mock_log = io.StringIO()
+
+        tee = TeeStream(mock_stdout, [mock_log])
+        tee.write("Hello, logging world!\n")
+        tee.flush()
+
+        self.assertEqual(mock_stdout.getvalue(), "Hello, logging world!\n")
+        self.assertEqual(mock_log.getvalue(), "Hello, logging world!\n")
+
+
 if __name__ == "__main__":
     unittest.main()

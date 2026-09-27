@@ -208,6 +208,10 @@ class GitRepositoryProvider(RepositoryProvider):
             capture_output=True,
             text=True
         )
+        if clone_res.stdout:
+            sys.stdout.write(clone_res.stdout)
+        if clone_res.stderr:
+            sys.stderr.write(clone_res.stderr)
         if clone_res.returncode != 0:
             raise RuntimeError(f"Failed to clone repository: {clone_res.stderr}")
 
@@ -223,6 +227,10 @@ class GitRepositoryProvider(RepositoryProvider):
             capture_output=True,
             text=True
         )
+        if checkout_res.stdout:
+            sys.stdout.write(checkout_res.stdout)
+        if checkout_res.stderr:
+            sys.stderr.write(checkout_res.stderr)
         if checkout_res.returncode != 0:
             raise RuntimeError(f"Failed to create branch '{self.branch}': {checkout_res.stderr}")
 
@@ -275,13 +283,18 @@ class GitRepositoryProvider(RepositoryProvider):
             command = f"{sys.executable} {command[7:]}"
             
         print(f"[Sandbox] Running sandbox command in clone: {command}")
-        return subprocess.run(
+        res = subprocess.run(
             command,
             shell=True,
             cwd=self.base_path,
             capture_output=True,
             text=True
         )
+        if res.stdout:
+            sys.stdout.write(res.stdout)
+        if res.stderr:
+            sys.stderr.write(res.stderr)
+        return res
 
     def read_metrics(self, metrics_file: str) -> dict:
         full_path = self._resolve_path(metrics_file)
@@ -335,12 +348,40 @@ class GitRepositoryProvider(RepositoryProvider):
             raise RuntimeError("Cannot open PR without valid GitHub App authentication.")
 
         # 1. Configure git user locally in the sandbox clone
-        subprocess.run(["git", "config", "user.name", "github-actions[bot]"], cwd=self.base_path)
-        subprocess.run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], cwd=self.base_path)
+        res_name = subprocess.run(
+            ["git", "config", "user.name", "github-actions[bot]"],
+            cwd=self.base_path,
+            capture_output=True,
+            text=True
+        )
+        if res_name.stdout:
+            sys.stdout.write(res_name.stdout)
+        if res_name.stderr:
+            sys.stderr.write(res_name.stderr)
+
+        res_email = subprocess.run(
+            ["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"],
+            cwd=self.base_path,
+            capture_output=True,
+            text=True
+        )
+        if res_email.stdout:
+            sys.stdout.write(res_email.stdout)
+        if res_email.stderr:
+            sys.stderr.write(res_email.stderr)
 
         # 2. Stage and commit changes
         print("[Git] Staging changes in local clone...")
-        subprocess.run(["git", "add", "."], cwd=self.base_path)
+        res_add = subprocess.run(
+            ["git", "add", "."],
+            cwd=self.base_path,
+            capture_output=True,
+            text=True
+        )
+        if res_add.stdout:
+            sys.stdout.write(res_add.stdout)
+        if res_add.stderr:
+            sys.stderr.write(res_add.stderr)
         
         print("[Git] Committing changes...")
         commit_res = subprocess.run(
@@ -349,6 +390,10 @@ class GitRepositoryProvider(RepositoryProvider):
             capture_output=True,
             text=True
         )
+        if commit_res.stdout:
+            sys.stdout.write(commit_res.stdout)
+        if commit_res.stderr:
+            sys.stderr.write(commit_res.stderr)
         if commit_res.returncode != 0 and "nothing to commit" not in commit_res.stdout:
             raise RuntimeError(f"Git commit failed: {commit_res.stderr}")
 
@@ -360,6 +405,10 @@ class GitRepositoryProvider(RepositoryProvider):
             capture_output=True,
             text=True
         )
+        if push_res.stdout:
+            sys.stdout.write(push_res.stdout)
+        if push_res.stderr:
+            sys.stderr.write(push_res.stderr)
         if push_res.returncode != 0:
             raise RuntimeError(f"Git push failed: {push_res.stderr}")
 

@@ -5,6 +5,7 @@ import re
 import json
 import subprocess
 import argparse
+from datetime import datetime
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 
@@ -84,13 +85,18 @@ class LocalRepositoryProvider(RepositoryProvider):
             
         # Run command inside the target repository directory
         print(f"[Sandbox] Executing command in '{self.base_path}': {command}")
-        return subprocess.run(
+        res = subprocess.run(
             command,
             shell=True,
             cwd=self.base_path,
             capture_output=True,
             text=True
         )
+        if res.stdout:
+            sys.stdout.write(res.stdout)
+        if res.stderr:
+            sys.stderr.write(res.stderr)
+        return res
 
     def read_metrics(self, metrics_file: str) -> dict:
         full_path = self._resolve_path(metrics_file)
@@ -299,16 +305,9 @@ def log_execution_run(
     Appends a detailed log of the execution run (success, fail, error) to a persistent log file.
     Maintains systematic audit telemetry.
     """
-    from datetime import datetime
     import os
-    
-    # Resolve the log file path relative to the root directory
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    root_dir = os.path.abspath(os.path.join(script_dir, ".."))
-    full_log_path = os.path.join(root_dir, log_file)
-    
-    # Ensure parent directory exists (creates the 'logs' folder if missing)
-    os.makedirs(os.path.dirname(full_log_path), exist_ok=True)
+    import json
+    import sys
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -328,12 +327,27 @@ TRIGGER ISSUE: "{issue_desc}"
         
     log_entry += "================================================================================\n\n"
     
-    try:
-        with open(full_log_path, "a") as f:
-            f.write(log_entry)
+    # Check if sys.stdout is redirected via our TeeStream
+    if hasattr(sys.stdout, "log_files"):
+        # We are using TeeStream! Write the entry directly to sys.stdout
+        # which will print to screen and write to all tee'd log files automatically
+        sys.stdout.write(log_entry)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = os.path.abspath(os.path.join(script_dir, ".."))
+        full_log_path = os.path.join(root_dir, log_file)
         print(f"📝 [Execution Log] Recorded run details to: {full_log_path}")
-    except Exception as e:
-        print(f"[Warning] Failed to write to execution log file: {e}")
+    else:
+        # Fallback to standard file write (e.g. for unit tests)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = os.path.abspath(os.path.join(script_dir, ".."))
+        full_log_path = os.path.join(root_dir, log_file)
+        os.makedirs(os.path.dirname(full_log_path), exist_ok=True)
+        try:
+            with open(full_log_path, "a") as f:
+                f.write(log_entry)
+            print(f"📝 [Execution Log] Recorded run details to: {full_log_path}")
+        except Exception as e:
+            print(f"[Warning] Failed to write to execution log file: {e}")
 
 
 # =====================================================================
@@ -454,16 +468,47 @@ def get_mock_llm_response(issue_desc: str) -> dict:
     }
 
 
+class TeeStream:
+    """
+    Redirects writes to a stream (like sys.stdout or sys.stderr) to the original stream
+    as well as to one or more log files.
+    """
+    def __init__(self, original_stream, log_files):
+        self.original_stream = original_stream
+        self.log_files = log_files
+
+    def write(self, message):
+        self.original_stream.write(message)
+        for f in self.log_files:
+            try:
+                f.write(message)
+                f.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        self.original_stream.flush()
+        for f in self.log_files:
+            try:
+                f.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        return self.original_stream.isatty()
+
+    def fileno(self):
+        return self.original_stream.fileno()
+
+    def __getattr__(self, name):
+        return getattr(self.original_stream, name)
+
+
 # =====================================================================
 # 4. Main Runner Core Loop
 # =====================================================================
 
-def main():
-    load_dotenv()
-    parser = argparse.ArgumentParser(description="Autonomous PR Agent CLI")
-    parser.add_argument("issue", type=str, nargs="?", default=None, help="The user-reported issue / diagnosis to solve. If omitted, fetches open issues from GitHub.")
-    args = parser.parse_args()
-
+def run_agent(args):
     print("====================================================")
     print("🤖 STARTING AUTONOMOUS PR AGENT")
     print("====================================================")
@@ -742,6 +787,53 @@ File modified: `{file_to_modify}`
 
     print("\n🎉 PROCESS COMPLETED SUCCESSFULLY!")
     print("====================================================")
+
+
+# =====================================================================
+# 4. Main Runner Core Loop (Tee Capture Setup)
+# =====================================================================
+
+def main():
+    load_dotenv()
+    parser = argparse.ArgumentParser(description="Autonomous PR Agent CLI")
+    parser.add_argument("issue", type=str, nargs="?", default=None, help="The user-reported issue / diagnosis to solve. If omitted, fetches open issues from GitHub.")
+    args = parser.parse_args()
+
+    # Create logs directory and open detailed log files
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.abspath(os.path.join(script_dir, ".."))
+    logs_dir = os.path.join(root_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    execution_log_path = os.path.join(logs_dir, "execution.log")
+    timestamped_log_path = os.path.join(logs_dir, f"execution_{timestamp_str}.log")
+
+    log_files = []
+    try:
+        log_files.append(open(execution_log_path, "w", encoding="utf-8"))
+        log_files.append(open(timestamped_log_path, "w", encoding="utf-8"))
+    except Exception as e:
+        print(f"[Warning] Failed to open log files: {e}", file=sys.stderr)
+
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+
+    sys.stdout = TeeStream(original_stdout, log_files)
+    sys.stderr = TeeStream(original_stderr, log_files)
+
+    try:
+        run_agent(args)
+    finally:
+        # Restore streams
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        # Close log files
+        for f in log_files:
+            try:
+                f.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
