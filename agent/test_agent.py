@@ -142,5 +142,60 @@ print("Model training completed successfully with new parameters.")
         self.assertFalse(is_valid)
         self.assertIn("is not in the allowed files list", err_msg)
 
+
+from unittest.mock import patch, MagicMock
+from agent.agent import LocalRepositoryProvider
+from agent.github_provider import GitRepositoryProvider
+
+class TestIssueDetection(unittest.TestCase):
+    def test_local_repository_provider_get_open_issues(self):
+        provider = LocalRepositoryProvider(".")
+        issues = provider.get_open_issues()
+        self.assertEqual(issues, [])
+
+    @patch("agent.github_provider.GitRepositoryProvider._clone_and_checkout")
+    @patch("requests.get")
+    def test_git_repository_provider_get_open_issues(self, mock_get, mock_clone):
+        # Setup mock for GitRepositoryProvider initialization to prevent network/auth calls
+        with patch.dict("os.environ", {
+            "GITHUB_APP_ID": "12345",
+            "GITHUB_INSTALLATION_ID": "67890",
+            "GITHUB_PRIVATE_KEY": "fake_private_key"
+        }):
+            with patch("agent.github_provider.GitHubAppAuthenticator") as mock_auth:
+                mock_auth.return_value.get_installation_access_token.return_value = "fake_token"
+                
+                # Instantiate provider
+                provider = GitRepositoryProvider("https://github.com/owner/repo.git")
+                
+                # Mock response from GitHub Issues API
+                mock_response = MagicMock()
+                mock_response.json.return_value = [
+                    {
+                        "number": 1,
+                        "title": "Fix issue 1",
+                        "body": "Fix details 1",
+                        "labels": [{"name": "ai-coder"}],
+                        "html_url": "https://github.com/owner/repo/issues/1"
+                    },
+                    {
+                        "number": 2,
+                        "title": "A Pull Request issue",
+                        "pull_request": {} # Marks this as a PR
+                    }
+                ]
+                mock_get.return_value = mock_response
+                
+                issues = provider.get_open_issues()
+                
+                # Should find exactly 1 pure issue (excluding the PR)
+                self.assertEqual(len(issues), 1)
+                self.assertEqual(issues[0]["number"], 1)
+                self.assertEqual(issues[0]["title"], "Fix issue 1")
+                self.assertEqual(issues[0]["body"], "Fix details 1")
+                self.assertEqual(issues[0]["labels"], ["ai-coder"])
+                provider.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

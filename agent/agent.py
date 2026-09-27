@@ -37,6 +37,11 @@ class RepositoryProvider(ABC):
         """Reads and parses the JSON metrics output from the workspace."""
         pass
 
+    @abstractmethod
+    def get_open_issues(self) -> List[dict]:
+        """Retrieves a list of open issues for the repository."""
+        pass
+
 
 class LocalRepositoryProvider(RepositoryProvider):
     """
@@ -93,6 +98,10 @@ class LocalRepositoryProvider(RepositoryProvider):
             return {}
         with open(full_path, "r") as f:
             return json.load(f)
+
+    def get_open_issues(self) -> List[dict]:
+        """Returns a mock empty list of open issues for local provider simulation."""
+        return []
 
 
 try:
@@ -452,13 +461,16 @@ def get_mock_llm_response(issue_desc: str) -> dict:
 def main():
     load_dotenv()
     parser = argparse.ArgumentParser(description="Autonomous PR Agent CLI")
-    parser.add_argument("issue", type=str, help="The user-reported issue / diagnosis to solve.")
+    parser.add_argument("issue", type=str, nargs="?", default=None, help="The user-reported issue / diagnosis to solve. If omitted, fetches open issues from GitHub.")
     args = parser.parse_args()
 
     print("====================================================")
     print("🤖 STARTING AUTONOMOUS PR AGENT")
     print("====================================================")
-    print(f"Issue Triggered: \"{args.issue}\"\n")
+    if args.issue:
+        print(f"Issue Triggered via CLI: \"{args.issue}\"\n")
+    else:
+        print("Mode: Auto-detecting open issues from repository...\n")
 
     # 1. Load Configurations
     try:
@@ -466,7 +478,7 @@ def main():
         print("[Config] Successfully loaded config.yaml.")
     except Exception as e:
         print(f"[Error] Failed to load config.yaml: {e}")
-        log_execution_run(status="ERROR", issue_desc=args.issue, error_msg=f"Failed to load config.yaml: {e}")
+        log_execution_run(status="ERROR", issue_desc=args.issue or "CLI Initialization", error_msg=f"Failed to load config.yaml: {e}")
         sys.exit(1)
 
     target_config = config.get("target_repo", {})
@@ -485,8 +497,35 @@ def main():
             print(f"[Repo] Initialized Git Repository Provider for: {repo_provider.clone_url}")
     except Exception as e:
         print(f"[Error] Failed to initialize Repository Provider: {e}")
-        log_execution_run(status="ERROR", issue_desc=args.issue, error_msg=f"Failed to initialize Repository Provider: {e}")
+        log_execution_run(status="ERROR", issue_desc=args.issue or "CLI Initialization", error_msg=f"Failed to initialize Repository Provider: {e}")
         sys.exit(1)
+
+    # 2.5 Fetch open issues if not provided manually via CLI
+    issue_desc = args.issue
+    if not issue_desc:
+        print("\n--- [Issue Auto-Detection] ---")
+        print("No issue description provided via CLI. Fetching open issues from repository...")
+        try:
+            open_issues = repo_provider.get_open_issues()
+            if not open_issues:
+                print("⚠️ No open issues found in the repository. Exiting safely.")
+                sys.exit(0)
+                
+            # Filter prioritized issues (e.g. those with 'ai-coder' label)
+            prioritized_issues = [i for i in open_issues if "ai-coder" in i.get("labels", [])]
+            selected_issue = prioritized_issues[0] if prioritized_issues else open_issues[0]
+            
+            print(f"✅ Successfully fetched {len(open_issues)} open issue(s).")
+            print(f"👉 Selected Issue #{selected_issue['number']}: \"{selected_issue['title']}\"")
+            
+            # Combine title and body for full prompt context
+            issue_desc = selected_issue['title']
+            if selected_issue['body']:
+                issue_desc += f"\n\n{selected_issue['body']}"
+        except Exception as e:
+            print(f"[Error] Failed to fetch open issues from repository: {e}")
+            log_execution_run(status="ERROR", issue_desc="Fetch Open Issues", error_msg=f"Failed to fetch open issues: {e}")
+            sys.exit(1)
 
     # 3. Retrieve Original Codebase Context & Metrics
     print("\n--- [Step 1: Context Ingestion] ---")
@@ -511,7 +550,7 @@ def main():
         res = repo_provider.run_command(sandbox_config.get("evaluation_command"))
         if res.returncode != 0:
             print(f"[Error] Failed to run initial evaluation command: {res.stderr}")
-            log_execution_run(status="ERROR", issue_desc=args.issue, error_msg=f"Failed to run initial evaluation command: {res.stderr}")
+            log_execution_run(status="ERROR", issue_desc=issue_desc, error_msg=f"Failed to run initial evaluation command: {res.stderr}")
             sys.exit(1)
         baseline_metrics = repo_provider.read_metrics(sandbox_config.get("metrics_file"))
         if not baseline_metrics:
@@ -528,7 +567,7 @@ def main():
     # 4. Generate Proposed Fixes (LLM / Mock)
     print("\n--- [Step 2: Proposing Code Changes] ---")
     print("Calling LLM client...")
-    proposal = generate_fix(args.issue, original_content, llm_config)
+    proposal = generate_fix(issue_desc, original_content, llm_config)
     
     file_to_modify = proposal.get("file_to_modify")
     original_code_block = proposal.get("original_code")
@@ -549,7 +588,7 @@ def main():
     # Let's rebuild the full file content with changes applied to validate
     if original_code_block not in original_content:
         print("[Error] LLM proposed original code block was not found in the original file content. Aborting.")
-        log_execution_run(status="ERROR", issue_desc=args.issue, error_msg="LLM proposed original code block was not found in original file content.")
+        log_execution_run(status="ERROR", issue_desc=issue_desc, error_msg="LLM proposed original code block was not found in original file content.")
         sys.exit(1)
         
     modified_content = original_content.replace(original_code_block, new_code_block)
@@ -567,13 +606,13 @@ def main():
         print(f"❌ [Security Reject] Proposed changes failed the strict allowlist guardrail!")
         print(f"Reason: {validation_error}")
         log_security_violation(
-            issue_desc=args.issue,
+            issue_desc=issue_desc,
             file_name=file_to_modify,
             original_code=original_code_block,
             new_code=new_code_block,
             error_msg=validation_error
         )
-        log_execution_run(status="REJECTED", issue_desc=args.issue, error_msg=validation_error)
+        log_execution_run(status="REJECTED", issue_desc=issue_desc, error_msg=validation_error)
         print("Aborting. No changes were applied.")
         sys.exit(1)
     else:
@@ -586,7 +625,7 @@ def main():
         repo_provider.write_file_content(file_to_modify, modified_content)
     except Exception as e:
         print(f"[Error] Failed to write changes to file: {e}")
-        log_execution_run(status="ERROR", issue_desc=args.issue, error_msg=f"Failed to write changes to sandbox: {e}")
+        log_execution_run(status="ERROR", issue_desc=issue_desc, error_msg=f"Failed to write changes to sandbox: {e}")
         # Attempt to restore just in case
         sys.exit(1)
 
@@ -597,7 +636,7 @@ def main():
         print(f"❌ [Sandbox Error] Evaluation command crashed or failed!")
         print(f"Exit code: {eval_res.returncode}")
         print(f"Error output:\n{eval_res.stderr}")
-        log_execution_run(status="SANDBOX_FAILED", issue_desc=args.issue, error_msg=f"Sandbox evaluation command failed with exit code {eval_res.returncode}: {eval_res.stderr}")
+        log_execution_run(status="SANDBOX_FAILED", issue_desc=issue_desc, error_msg=f"Sandbox evaluation command failed with exit code {eval_res.returncode}: {eval_res.stderr}")
         
         # Roll back changes immediately to keep sandbox pristine!
         print("Rolling back changes to keep sandbox pristine...")
@@ -645,7 +684,7 @@ def main():
 An automated ML adjustment has been proposed to address the reported issue.
 
 #### 🎯 Diagnosis & Evidence
-* **Issue Trigger:** "{args.issue}"
+* **Issue Trigger:** "{issue_desc}"
 * **Original Metrics**: Loaded from `metrics.json`
 * **Proposed Adjustment**: Evaluated in sandbox environment
 
@@ -687,19 +726,19 @@ File modified: `{file_to_modify}`
                 pr_data = repo_provider.push_and_open_pr(pr_title, pr_body)
                 pr_url = pr_data.get('html_url')
                 print(f"✅ Pull Request successfully created: {pr_url}")
-                log_execution_run(status="SUCCESS", issue_desc=args.issue, baseline_metrics=baseline_metrics, new_metrics=new_metrics, pr_url=pr_url)
+                log_execution_run(status="SUCCESS", issue_desc=issue_desc, baseline_metrics=baseline_metrics, new_metrics=new_metrics, pr_url=pr_url)
             except Exception as e:
                 print(f"❌ Failed to push changes or open PR: {e}")
-                log_execution_run(status="PR_FAILED", issue_desc=args.issue, baseline_metrics=baseline_metrics, new_metrics=new_metrics, error_msg=f"Failed to push or open PR: {e}")
+                log_execution_run(status="PR_FAILED", issue_desc=issue_desc, baseline_metrics=baseline_metrics, new_metrics=new_metrics, error_msg=f"Failed to push or open PR: {e}")
             finally:
                 # Cleanup the sandbox directory
                 repo_provider.cleanup()
         else:
             print("\n[GitHub] GitHub App credentials not configured. Skipping remote push/PR step.")
-            log_execution_run(status="LOCAL_SUCCESS", issue_desc=args.issue, baseline_metrics=baseline_metrics, new_metrics=new_metrics, error_msg="Local verification succeeded, but remote push was skipped (missing GitHub App credentials).")
+            log_execution_run(status="LOCAL_SUCCESS", issue_desc=issue_desc, baseline_metrics=baseline_metrics, new_metrics=new_metrics, error_msg="Local verification succeeded, but remote push was skipped (missing GitHub App credentials).")
             repo_provider.cleanup()
     else:
-        log_execution_run(status="LOCAL_SUCCESS", issue_desc=args.issue, baseline_metrics=baseline_metrics, new_metrics=new_metrics, error_msg="Local verification succeeded (LocalRepositoryProvider).")
+        log_execution_run(status="LOCAL_SUCCESS", issue_desc=issue_desc, baseline_metrics=baseline_metrics, new_metrics=new_metrics, error_msg="Local verification succeeded (LocalRepositoryProvider).")
 
     print("\n🎉 PROCESS COMPLETED SUCCESSFULLY!")
     print("====================================================")

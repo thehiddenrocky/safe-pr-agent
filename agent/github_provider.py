@@ -34,6 +34,8 @@ except ImportError:
             def run_command(self, command: str) -> subprocess.CompletedProcess: pass
             @abstractmethod
             def read_metrics(self, metrics_file: str) -> dict: pass
+            @abstractmethod
+            def get_open_issues(self) -> List[dict]: pass
 
 
 def load_dotenv():
@@ -287,6 +289,42 @@ class GitRepositoryProvider(RepositoryProvider):
             return {}
         with open(full_path, "r", encoding="utf-8") as f:
             return json.load(f)
+
+    def get_open_issues(self) -> List[dict]:
+        """
+        Queries the GitHub REST API to fetch open issues for the repository.
+        Filters out pull requests and returns issue metadata.
+        """
+        if not self.token:
+            print("[Warning] No GitHub token available to fetch open issues.")
+            return []
+
+        url = f"https://api.github.com/repos/{self.owner}/{self.repo_name}/issues"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params={"state": "open"})
+            response.raise_for_status()
+            issues_data = response.json()
+
+            open_issues = []
+            for issue in issues_data:
+                if "pull_request" not in issue:
+                    open_issues.append({
+                        "number": issue["number"],
+                        "title": issue["title"],
+                        "body": issue["body"] or "",
+                        "labels": [label["name"] for label in issue.get("labels", [])],
+                        "html_url": issue.get("html_url")
+                    })
+            return open_issues
+        except Exception as e:
+            print(f"[Error] Failed to fetch open issues from GitHub: {e}")
+            return []
 
     def push_and_open_pr(self, pr_title: str, pr_body: str) -> dict:
         """
